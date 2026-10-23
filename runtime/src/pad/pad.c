@@ -1,0 +1,137 @@
+/* The controller ports (Sega2.doc "I/O"; the pad protocol as in gen_hw.txt):
+ *   data registers ($A10003 / 5 / 7): bit 7 reads back what was written, bit 6 is TH; a bit set
+ *   in the control register ($A10009 / B / D) is an output and reads back the written value,
+ *   the others read the pad's lines.
+ *   3-button pad: TH 1: ?1CBRLDU, TH 0: ?0SA00DU (active low).
+ *   6-button pad: counting TH low-to-high transitions, the third TH 0 read gives D3-D0 all 0, the
+ *   following TH 1 gives ?1CBMXYZ and the TH 0 after it D3-D0 all 1.
+ *   The 4 Way Play: in both ports; port 2's lines choose what port 1 reads (mdrt/pad.h). */
+#include <string.h>
+#include "mdrt/pad.h"
+#include "../state.h"
+
+void mdrt_pads_init(mdrt_pads *p, int overseas, int pal)
+{
+    memset(p, 0, sizeof *p);
+    p->reg[0] = (uint8_t)((overseas ? 0x80 : 0) | (pal ? 0x40 : 0) | 0x20);   /* no expansion unit */
+    p->reg[7] = 0xFF;                                     /* serial transmit buffers */
+    p->reg[10] = 0xFF;
+    p->reg[13] = 0xFB;
+    p->type[0] = p->type[1] = MDRT_PAD_3BUTTON;
+}
+
+void mdrt_pad_set_type(mdrt_pads *p, int port, int type) { if (port >= 0 && port < 2) p->type[port] = (uint8_t)type; }
+void mdrt_pad_set(mdrt_pads *p, int pad, uint16_t buttons) { if (pad >= 0 && pad < MDRT_PADS) p->buttons[pad] = buttons; }
+void mdrt_pads_set_adaptor(mdrt_pads *p, int adaptor) { p->adaptor = (uint8_t)(adaptor == MDRT_ADAPTOR_EA4WAY ? adaptor : MDRT_ADAPTOR_NONE); }
+void mdrt_pads_frame(mdrt_pads *p) { p->steps[0] = p->steps[1] = 0; }
+
+/* the TH level: the written value when TH is an output, else pulled high */
+static int th(const mdrt_pads *p, int port)
+{
+    return (p->reg[4 + port] & 0x40) ? (p->reg[1 + port] >> 6) & 1 : 1;
+}
+
+/* a 3-button pad's lines under TH t (active low) */
+static uint8_t lines3(uint16_t b, int t)
+{
+    uint8_t d = (uint8_t)((t << 6) | 0x3F);
+    if (t) return (uint8_t)(d & ~(b & 0x3F));                                          /* ?1CBRLDU */
+    return (uint8_t)(d & ~(((b >> 2) & 0x30) | (b & 0x03) | 0x0C));                    /* ?0SA00DU */
+}
+
+/* the lines a pad drives: D6 is TH, D5-D0 the buttons for the TH level (active low) */
+static uint8_t pad_lines(const mdrt_pads *p, int port)
+{
+    int t = th(p, port);
+    if (p->adaptor == MDRT_ADAPTOR_EA4WAY) {             /* port 2 chooses what port 1 shows */
+        if (port == 1) return 0x7F;
+        uint8_t sel = p->reg[2] & p->reg[5];              /* (port 2's outputs: a line it does not drive is 0) */
+        if (sel & 0x40) return (uint8_t)((t << 6) | 0x3C);   /* the adaptor's mark: D1-D0 low */
+        return lines3(p->buttons[(sel >> 4) & 3], t);
+    }
+    uint8_t d = (uint8_t)((t << 6) | 0x3F);
+    uint16_t b = p->buttons[port];
+    if (p->type[port] == MDRT_PAD_NONE) return 0x7F;
+    if (p->type[port] == MDRT_PAD_6BUTTON) {
+        int s = p->steps[port];
+        if (!t && s == 2) return (uint8_t)(d & ~(((b >> 2) & 0x30) | 0x0F));          /* ?0SA0000 */
+        if (t && s == 3) return (uint8_t)(d & ~((b & 0x30) | ((b >> 8) & 0x0F)));     /* ?1CBMXYZ */
+        if (!t && s == 3) return (uint8_t)(d & ~((b >> 2) & 0x30));                   /* ?0SA1111 */
+    }
+    return lines3(b, t);
+}
+
+void mdrt_pads_set_observer(mdrt_pads *p, mdrt_pads_access_fn fn, void *user) { p->observe = fn; p->observe_user = user; }
+
+static uint8_t pad_read(mdrt_pads *p, uint32_t addr);
+uint8_t mdrt_pad_read(mdrt_pads *p, uint32_t addr)
+{
+    uint8_t v = pad_read(p, addr);
+    if (p->observe) p->observe(p->observe_user, 0, addr, v);
+    return v;
+}
+
+static void pad_write(mdrt_pads *p, uint32_t addr, uint8_t value);
+void mdrt_pad_write(mdrt_pads *p, uint32_t addr, uint8_t value)
+{
+    pad_write(p, addr, value);
+    if (p->observe) p->observe(p->observe_user, 1, addr, value);
+}
+
+static uint8_t pad_read(mdrt_pads *p, uint32_t addr)
+{
+    int r = (int)((addr & 0x1F) >> 1);
+    if (r >= 1 && r <= 3) {
+        uint8_t mask = (uint8_t)(0x80 | p->reg[r + 3]);
+        uint8_t lines = r <= 2 ? pad_lines(p, r - 1) : 0x7F;
+        return (uint8_t)((p->reg[r] & mask) | (lines & ~mask));
+    }
+    return p->reg[r & 15];
+}
+
+static void pad_write(mdrt_pads *p, uint32_t addr, uint8_t value)
+{
+    int r = (int)((addr & 0x1F) >> 1);
+    if (r == 0) return;                                   /* the version register is read-only */
+    if (r >= 1 && r <= 2) {
+        int port = r - 1, before = th(p, port);
+        p->reg[r] = value;
+        if (!before && th(p, port) && p->steps[port] < 4) p->steps[port]++;           /* TH low to high */
+        return;
+    }
+    if (r >= 4 && r <= 5) {
+        int port = r - 4, before = th(p, port);
+        p->reg[r] = value;
+        if (!before && th(p, port) && p->steps[port] < 4) p->steps[port]++;
+        return;
+    }
+    p->reg[r & 15] = value;
+}
+
+size_t mdrt_pads_save(const mdrt_pads *p, uint8_t *out)
+{
+    st_out o = { out, 0 };
+    st_put(&o, p->reg, 16);
+    st_u16s(&o, p->buttons, MDRT_PADS);
+    st_put(&o, p->type, 2);
+    st_put(&o, p->steps, 2);
+    st_put(&o, &p->adaptor, 1);
+    return o.n;
+}
+
+#define OLD_SIZE (16 + 2 * 2 + 2 + 2)                     /* (before the adaptor: two pads) */
+
+int mdrt_pads_load(mdrt_pads *p, const uint8_t *in, size_t size)
+{
+    int pads = size == OLD_SIZE ? 2 : MDRT_PADS;
+    if (size != OLD_SIZE && size != mdrt_pads_save(p, NULL)) return -1;
+    st_in i = { in, 0, size, 0 };
+    st_get(&i, p->reg, 16);
+    memset(p->buttons, 0, sizeof p->buttons);
+    st_g16s(&i, p->buttons, pads);
+    st_get(&i, p->type, 2);
+    st_get(&i, p->steps, 2);
+    p->adaptor = MDRT_ADAPTOR_NONE;
+    if (pads == MDRT_PADS) st_get(&i, &p->adaptor, 1);
+    return 0;
+}

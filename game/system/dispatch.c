@@ -1,0 +1,89 @@
+/* jsr (a0) to a routine address the game keeps in RAM or in a table (menu handlers, the menu
+ * draw routine, the vblank handler in vbint): the C function of that 68k routine. Every address
+ * the game stores there is in the table (the menu lists, the draw routines and the vbint stores
+ * were swept for it). Also run68k / restart_at, the C side of the stack resets. */
+#include <stdio.h>
+#include <stdlib.h>
+#include "game.h"
+#include "symbols_gen.h"
+
+/* the menu handlers that take the pause pad's team (a2, which HandleMenuInput set with seta2) */
+static void player_stats(void) { PlayerStatsScreen(seta2()); }
+static void line_editor(void) { LineEditor(seta2()); }
+static void team_roster(void) { TeamRosterScreen(seta2()); }
+static void timeout_menu(void) { TimeoutMenu(seta2()); }
+static void select_goalie(void) { SelectGoalieMenu(seta2()); }
+static void shootout_shooters(void) { ShootoutShooters(seta2()); }
+static void encode_lines(void) { EncodeTeamLines(seta2()); }
+static void decode_lines(void) { DecodeTeamLines(seta2()); }
+static void original_lines(void) { InitTeamLines(seta2()); }
+static void rts(void) {}
+
+static const struct { uint32_t addr; void (*fn)(void); } routines[] = {
+    { SYM_rtss2, rts },                                   /* Resume Game */
+    { SYM_PlayerStatsScreen, player_stats },
+    { SYM_PlayoffStatsScreen, PlayoffStatsScreen },
+    { SYM_ManualGoalieMenu, ManualGoalieMenu },
+    { SYM_LineEditor, line_editor },
+    { SYM_TeamRosterScreen, team_roster },
+    { SYM_TimeoutMenu, timeout_menu },
+    { SYM_SelectGoalieMenu, select_goalie },
+    { SYM_ShootoutShooters, shootout_shooters },
+    { SYM_EncodeTeamLines, encode_lines },
+    { SYM_DecodeTeamLines, decode_lines },
+    { SYM_InitTeamStructure + 0x10, original_lines },     /* Set Original lines */
+    { SYM_ScoringSummaryScreen, ScoringSummaryScreen },
+    { SYM_PenaltySummaryScreen, PenaltySummaryScreen },
+    { SYM_ShowScores, ShowScores },
+    { SYM_CrowdMeterScreen, CrowdMeterScreen },
+    { SYM_PlayerCards, PlayerCards },
+    { SYM_RecordHoldersScreen, RecordHoldersScreen },
+    { SYM_ReloadRinkGraphics, ReloadRinkGraphics },
+    { SYM_SetupPauseScreen, SetupPauseScreen },
+    { SYM_VBlank, VBlank },
+    { SYM_vb2, vb2 },
+    { SYM_VBcount, VBcount },
+    { SYM_VBlank_TitleScreen, VBlank_TitleScreen },
+    { SYM_VBlank_SetOptions, VBlank_SetOptions },
+    { SYM_VBlank_Playoff, VBlank_Playoff },
+    { SYM_ReplayMode, ReplayMode },
+    { SYM_PeriodStatsScreen, PeriodStatsScreen },
+    { SYM_GameStatisticsScreen, GameStatisticsScreen },
+};
+
+/* an address the table does not know: a bug in the port (the tests replay the recorded call) */
+__attribute__((weak)) void call68k_missing(uint32_t addr)
+{
+    fprintf(stderr, "call68k: routine %06x is not ported\n", addr);
+    abort();
+}
+
+void call68k(uint32_t addr)
+{
+    for (size_t i = 0; i < sizeof routines / sizeof *routines; i++)
+        if (routines[i].addr == addr) { routines[i].fn(); return; }
+    call68k_missing(addr);
+}
+
+/* movea.w #Stack,sp: StartPer and Opening2 restart the program with an empty stack, from
+ * however deep the 68k was (IntermissionStart is reached from inside puckfaceoff). The C does
+ * the same with a longjmp back to run68k, which then calls the routine. */
+#include <setjmp.h>
+static jmp_buf top;
+static void (*volatile next_entry)(void);
+static int running;
+
+void run68k(void (*entry)(void))
+{
+    next_entry = entry;
+    running = 1;
+    setjmp(top);
+    for (;;) next_entry();                                /* the game never returns */
+}
+
+void restart_at(void (*entry)(void))
+{
+    if (!running) { fprintf(stderr, "restart_at: run68k is not running\n"); abort(); }
+    next_entry = entry;
+    longjmp(top, 1);
+}

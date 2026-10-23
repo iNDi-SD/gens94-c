@@ -1,0 +1,11 @@
+# sha256 of each script's golden file (frames, then name) as ninety-four (Classic rules) wrote it, 2026-10-22
+# (its CRs taken out: a Windows build writes CRLF). full_game added 2026-10-22, its hash ninety-four's
+# (d503a46) and golden's alike.
+ce9b514c1f8365c52659384566fc3f4e3795e6289146d60c14797956c5412e6f 44000 full_game
+2260668fddc7a74951ec3850b0cd5475fe7806d8b4543018c3174867f717b679 16000 full_game_30s
+c3772097325e8f82ba57f9ae50bdd26ae3ace2dbd21986414a7ce4333147bb9e 16000 pause_menus
+47d01a6a007b83fcb85f9c0973c77940f5cb731cead7bac05ae6a4cb5f13d655 16000 playoff_game_30s
+58994a1cc87b31f7296b405d47eee2fb126698d2181e5b7054a7ba7bb8fbbfe7 16000 playoffs
+c66bc5e6bcb9766ebd40a4d8a7596f91147d3cf21cb5d7fef6b35646c0adcd3a 16000 records_game_30s
+7d1f1d22f426ca45e9834bbc7ee901ce89c282bda129ca0c843f3288ffbcd0bc 16000 setup_menu
+a554b78e00063e14dbb80cf9561935b5051c11096179dd24b76eee2dc33cffa6 16000 shootout_menus

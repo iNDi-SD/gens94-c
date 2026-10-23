@@ -1,0 +1,9 @@
+# ROMs are never committed: the game reads the player's own cartridge
+*.bin
+*.gen
+*.md.idb
+/build/
+/out/
+# what the program writes beside itself: save RAM, the settings
+*.srm
+settings.ini
